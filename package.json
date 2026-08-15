@@ -1,0 +1,18 @@
+{
+  "name": "llm-enrich-api",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "type": "module",
+  "dependencies": {
+    "express": "^5.2.1",
+    "openai": "^6.49.0",
+    "zod": "^4.5.4"
+  }
+}
