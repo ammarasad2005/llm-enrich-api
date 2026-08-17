@@ -3,9 +3,9 @@
 // the model here. The route stays thin: validation + delegation, no prompt strings.
 
 import { Router } from 'express';
-import { InputSchema, OutputSchema, formatIssues } from '../llm/schema.js';
-import { stubEnrichment, callModelRaw } from '../llm/enrich.js';
-import { extractJson } from '../llm/parse.js';
+import { InputSchema, formatIssues } from '../llm/schema.js';
+import { stubEnrichment, enrich, EnrichError } from '../llm/enrich.js';
+import { quarantine } from '../llm/quarantine.js';
 
 export const enrichRouter = Router();
 
@@ -23,14 +23,22 @@ enrichRouter.post('/enrich', async (req, res) => {
     return res.status(200).json({ ...stubEnrichment(input), _mode: 'stub' });
   }
 
-  // Stage 2: make a real model call, parse the JSON, and validate against the schema.
-  // (Stage 3 adds the repair retry + quarantine; Stage 4 adds timeout/retries/logging.)
+  // Stage 3: call -> parse -> validate -> repair once -> quarantine + 422 on failure.
+  // Raw model text is NEVER returned to the caller; the schema is the contract.
   try {
-    const { content } = await callModelRaw(input);
-    const obj = extractJson(content); // strip code fences etc., then JSON.parse
-    const validated = OutputSchema.parse(obj); // throws if the shape is wrong
-    return res.status(200).json(validated);
+    const { data } = await enrich(input);
+    return res.status(200).json(data);
   } catch (err) {
-    return res.status(502).json({ error: `Model call/parse failed: ${err.message}` });
+    if (err instanceof EnrichError) {
+      quarantine({
+        input,
+        rawOutput: err.rawOutput,
+        error: err.message,
+        promptVersion: err.promptVersion,
+      });
+      return res.status(422).json({ error: 'Could not produce a valid result for this input.' });
+    }
+    // Unexpected error (e.g. provider/network) — surfaced in Stage 4 with timeouts/retries.
+    return res.status(502).json({ error: `Upstream model error: ${err.message}` });
   }
 });
