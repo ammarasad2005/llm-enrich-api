@@ -3,8 +3,9 @@
 // the model here. The route stays thin: validation + delegation, no prompt strings.
 
 import { Router } from 'express';
-import { InputSchema, formatIssues } from '../llm/schema.js';
-import { stubEnrichment } from '../llm/enrich.js';
+import { InputSchema, OutputSchema, formatIssues } from '../llm/schema.js';
+import { stubEnrichment, callModelRaw } from '../llm/enrich.js';
+import { extractJson } from '../llm/parse.js';
 
 export const enrichRouter = Router();
 
@@ -22,6 +23,14 @@ enrichRouter.post('/enrich', async (req, res) => {
     return res.status(200).json({ ...stubEnrichment(input), _mode: 'stub' });
   }
 
-  // (Stages 2-4 replace this with the real, guarded model call.)
-  return res.status(501).json({ error: 'Model path not implemented yet (set LLM_STUB=1)' });
+  // Stage 2: make a real model call, parse the JSON, and validate against the schema.
+  // (Stage 3 adds the repair retry + quarantine; Stage 4 adds timeout/retries/logging.)
+  try {
+    const { content } = await callModelRaw(input);
+    const obj = extractJson(content); // strip code fences etc., then JSON.parse
+    const validated = OutputSchema.parse(obj); // throws if the shape is wrong
+    return res.status(200).json(validated);
+  } catch (err) {
+    return res.status(502).json({ error: `Model call/parse failed: ${err.message}` });
+  }
 });
