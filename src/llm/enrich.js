@@ -5,6 +5,21 @@
 import { OutputSchema, formatIssues } from './schema.js';
 import { loadPrompt, chat } from './client.js';
 import { extractJson } from './parse.js';
+import { withRetry } from './retry.js';
+import { logCost } from './costlog.js';
+
+// Deterministic, model-free fallback used by the kill switch (LLM_ENABLED=false).
+export function fallbackEnrichment(input) {
+  const flags = [];
+  if (!input.description || input.description.trim() === '') flags.push('missing-description');
+  return {
+    category: 'other',
+    summary: `Automatic classification is temporarily unavailable for "${input.title}".`.slice(0, 200),
+    audience: 'all-ages',
+    quality_flags: flags,
+    confidence: 0,
+  };
+}
 
 // A fixed, schema-valid answer used when LLM_STUB=1. Lets us build and restart the
 // server dozens of times without spending a single model call / quota unit.
@@ -76,18 +91,40 @@ function parseAndValidate(content) {
 export async function enrich(input, { signal, chatFn = chat } = {}) {
   const { version, text } = loadPrompt();
   const messages = buildMessages(input, text);
+  const startedAt = Date.now();
 
-  const first = await chatFn(messages, { signal });
-  let check = parseAndValidate(first.content);
-  if (check.ok) {
-    return {
-      data: check.data,
-      usage: first.usage,
-      repairUsage: null,
+  let retries = 0;
+  const call = (msgs) =>
+    withRetry(() => chatFn(msgs, { signal }), {
+      onRetry: () => {
+        retries += 1;
+      },
+    });
+
+  let inputTokens = 0;
+  let outputTokens = 0;
+  const addUsage = (usage) => {
+    inputTokens += usage?.prompt_tokens ?? 0;
+    outputTokens += usage?.completion_tokens ?? 0;
+  };
+
+  const finish = (data, repaired) => {
+    logCost({
       promptVersion: version,
-      repaired: false,
-    };
-  }
+      model: process.env.LLM_MODEL,
+      inputTokens,
+      outputTokens,
+      durationMs: Date.now() - startedAt,
+      repaired,
+      retries,
+    });
+    return { data, promptVersion: version, repaired, inputTokens, outputTokens, retries };
+  };
+
+  const first = await call(messages);
+  addUsage(first.usage);
+  let check = parseAndValidate(first.content);
+  if (check.ok) return finish(check.data, false);
 
   // Repair exactly once: hand the model its own answer + the exact validation error.
   const repairMessages = [
@@ -100,19 +137,21 @@ export async function enrich(input, { signal, chatFn = chat } = {}) {
         `Return only corrected JSON matching the schema. No prose, no code fences.`,
     },
   ];
-  const second = await chatFn(repairMessages, { signal });
+  const second = await call(repairMessages);
+  addUsage(second.usage);
   check = parseAndValidate(second.content);
-  if (check.ok) {
-    return {
-      data: check.data,
-      usage: first.usage,
-      repairUsage: second.usage,
-      promptVersion: version,
-      repaired: true,
-    };
-  }
+  if (check.ok) return finish(check.data, true);
 
-  // Second attempt also failed — give up cleanly.
+  // Second attempt also failed — log the (failed) cost, then give up cleanly.
+  logCost({
+    promptVersion: version,
+    model: process.env.LLM_MODEL,
+    inputTokens,
+    outputTokens,
+    durationMs: Date.now() - startedAt,
+    repaired: true,
+    retries,
+  });
   throw new EnrichError(`model output failed validation after one repair: ${check.reason}`, {
     rawOutput: second.content,
     promptVersion: version,

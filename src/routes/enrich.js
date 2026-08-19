@@ -4,7 +4,7 @@
 
 import { Router } from 'express';
 import { InputSchema, formatIssues } from '../llm/schema.js';
-import { stubEnrichment, enrich, EnrichError } from '../llm/enrich.js';
+import { stubEnrichment, fallbackEnrichment, enrich, EnrichError } from '../llm/enrich.js';
 import { quarantine } from '../llm/quarantine.js';
 
 export const enrichRouter = Router();
@@ -23,8 +23,14 @@ enrichRouter.post('/enrich', async (req, res) => {
     return res.status(200).json({ ...stubEnrichment(input), _mode: 'stub' });
   }
 
-  // Stage 3: call -> parse -> validate -> repair once -> quarantine + 422 on failure.
-  // Raw model text is NEVER returned to the caller; the schema is the contract.
+  // 3) Kill switch: when LLM_ENABLED=false, never call the model — return a safe,
+  //    deterministic fallback so the feature can be turned off without a deploy.
+  if (process.env.LLM_ENABLED === 'false') {
+    return res.status(200).json({ ...fallbackEnrichment(input), _mode: 'fallback' });
+  }
+
+  // 4) call -> parse -> validate -> repair once -> quarantine + 422 on failure.
+  //    Raw model text is NEVER returned to the caller; the schema is the contract.
   try {
     const { data } = await enrich(input);
     return res.status(200).json(data);
@@ -38,7 +44,15 @@ enrichRouter.post('/enrich', async (req, res) => {
       });
       return res.status(422).json({ error: 'Could not produce a valid result for this input.' });
     }
-    // Unexpected error (e.g. provider/network) — surfaced in Stage 4 with timeouts/retries.
+    // A timed-out model call -> 504 (something we depend on took too long).
+    if (err?.name === 'APIConnectionTimeoutError' || err?.name === 'AbortError') {
+      return res.status(504).json({ error: 'The model took too long to respond. Try again.' });
+    }
+    // A rejected key / forbidden -> fail fast, clear error (never retried upstream).
+    const status = err?.status ?? err?.response?.status;
+    if (status === 401 || status === 403) {
+      return res.status(502).json({ error: 'Model provider rejected the request (auth).' });
+    }
     return res.status(502).json({ error: `Upstream model error: ${err.message}` });
   }
 });
