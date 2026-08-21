@@ -1,0 +1,111 @@
+diff --git a/src/routes/enrich.js b/ai-version/src/server.js
+index ae58253..7158090 100644
+--- a/src/routes/enrich.js
++++ b/ai-version/src/server.js
+@@ -1,58 +1,57 @@
+-// src/routes/enrich.js
+-// POST /enrich — validate the input, then (Stage 1) return a stub. Later stages call
+-// the model here. The route stays thin: validation + delegation, no prompt strings.
++// ai-version/src/server.js
++// QUARANTINED — the AI's attempt at the assignment, kept for the "AI vs me" review.
++// It is NOT the submission. It contains several realistic issues I found on review; see
++// the "AI vs me" section of the main README.
+ 
+-import { Router } from 'express';
+-import { InputSchema, formatIssues } from '../llm/schema.js';
+-import { stubEnrichment, fallbackEnrichment, enrich, EnrichError } from '../llm/enrich.js';
+-import { quarantine } from '../llm/quarantine.js';
++import express from 'express';
++import OpenAI from 'openai';
++import { z } from 'zod';
++import { readFileSync } from 'node:fs';
+ 
+-export const enrichRouter = Router();
++const app = express();
++app.use(express.json());
+ 
+-enrichRouter.post('/enrich', async (req, res) => {
+-  // 1) Validate the input BEFORE anything else — a rejected request is a model call
+-  //    we never pay for.
+-  const parsed = InputSchema.safeParse(req.body);
+-  if (!parsed.success) {
+-    return res.status(400).json({ error: formatIssues(parsed.error) });
+-  }
+-  const input = parsed.data;
++// No explicit timeout -> the SDK default is TEN MINUTES. One slow call hangs the endpoint.
++// SDK default maxRetries is 2 and is left in place -> it will even retry a 401.
++const client = new OpenAI({ apiKey: process.env.LLM_API_KEY, baseURL: process.env.LLM_BASE_URL });
+ 
+-  // 2) Stub mode: skip the model entirely, return a fixed schema-valid object.
+-  if (process.env.LLM_STUB === '1') {
+-    return res.status(200).json({ ...stubEnrichment(input), _mode: 'stub' });
+-  }
++const InputSchema = z.object({
++  title: z.string(),
++  description: z.string().optional(),
++});
+ 
+-  // 3) Kill switch: when LLM_ENABLED=false, never call the model — return a safe,
+-  //    deterministic fallback so the feature can be turned off without a deploy.
+-  if (process.env.LLM_ENABLED === 'false') {
+-    return res.status(200).json({ ...fallbackEnrichment(input), _mode: 'fallback' });
+-  }
++const OutputSchema = z.object({
++  category: z.enum(['fiction', 'nonfiction', 'childrens', 'poetry', 'reference', 'other']),
++  summary: z.string(),
++  audience: z.enum(['children', 'young-adult', 'adult', 'all-ages']),
++  quality_flags: z.array(z.string()),
++  confidence: z.number(),
++});
+ 
+-  // 4) call -> parse -> validate -> repair once -> quarantine + 422 on failure.
+-  //    Raw model text is NEVER returned to the caller; the schema is the contract.
++const prompt = readFileSync(new URL('../prompts/enrich.md', import.meta.url), 'utf8');
++
++app.post('/enrich', async (req, res) => {
++  const parsed = InputSchema.safeParse(req.body);
++  if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
++
++  const completion = await client.chat.completions.create({
++    model: process.env.LLM_MODEL,
++    messages: [
++      { role: 'system', content: prompt },
++      { role: 'user', content: `Title: ${req.body.title}\nDescription: ${req.body.description || ''}` },
++    ],
++  });
++
++  const text = completion.choices[0].message.content;
+   try {
+-    const { data } = await enrich(input);
+-    return res.status(200).json(data);
+-  } catch (err) {
+-    if (err instanceof EnrichError) {
+-      quarantine({
+-        input,
+-        rawOutput: err.rawOutput,
+-        error: err.message,
+-        promptVersion: err.promptVersion,
+-      });
+-      return res.status(422).json({ error: 'Could not produce a valid result for this input.' });
+-    }
+-    // A timed-out model call -> 504 (something we depend on took too long).
+-    if (err?.name === 'APIConnectionTimeoutError' || err?.name === 'AbortError') {
+-      return res.status(504).json({ error: 'The model took too long to respond. Try again.' });
+-    }
+-    // A rejected key / forbidden -> fail fast, clear error (never retried upstream).
+-    const status = err?.status ?? err?.response?.status;
+-    if (status === 401 || status === 403) {
+-      return res.status(502).json({ error: 'Model provider rejected the request (auth).' });
+-    }
+-    return res.status(502).json({ error: `Upstream model error: ${err.message}` });
++    const json = JSON.parse(text);
++    const valid = OutputSchema.parse(json);
++    res.json(valid);
++  } catch (e) {
++    // Returns the RAW model text straight to the caller on failure — no repair, no
++    // quarantine, no contract. Also no cost log, no kill switch, no stub mode.
++    res.json({ raw: text });
+   }
+ });
++
++app.listen(3000, () => console.log('AI version listening on 3000'));
