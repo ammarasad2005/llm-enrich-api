@@ -9,6 +9,24 @@ a sensible retry policy, a per-call cost log, a kill switch, and an 8-case eval.
 This is **not a chatbot.** One request in, one structured answer out — no conversation, no memory.
 That constraint is what makes it testable, cacheable, and safe to put in front of real users.
 
+## 🚀 Live demo
+
+**https://llm-enrich-api.vercel.app** (deployed on Vercel)
+
+```bash
+# health / info
+curl https://llm-enrich-api.vercel.app/
+
+# enrich a record
+curl -X POST https://llm-enrich-api.vercel.app/enrich \
+  -H "Content-Type: application/json" \
+  -d '{"title":"A Light in the Attic","description":"A classic collection of whimsical children'\''s poetry and drawings."}'
+```
+
+> Note: the hosted instance runs against **Google Gemini** (`gemini-2.5-flash`) via the same
+> provider-agnostic config — OpenRouter's free tier is heavily rate-limited, and switching provider
+> is just three env vars (`LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL`), which is the whole point.
+
 ## What it does (for a non-programmer)
 
 Last week's scraper produced 60 books with free-text descriptions. This endpoint reads one book and
