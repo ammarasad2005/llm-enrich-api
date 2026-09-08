@@ -86,6 +86,19 @@ environment variables and no code change** — that's the whole point of the cli
 
 ---
 
+## Deploy (Vercel)
+
+The Express app is exported from `src/app.js` and served serverless-style through
+`api/index.js`, with `vercel.json` rewriting every path to it. To deploy:
+
+1. Import the repo in Vercel (or `vercel --prod` with the CLI).
+2. Set these environment variables in the Vercel project (never commit them):
+   `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL`, `OPENROUTER_MODEL`, and optionally
+   `GEMINI_*`, `LLM_STUB`, `LLM_ENABLED`, `PROMPT_VERSION`.
+3. Deploy. `GET /` returns a health message; `POST /enrich` runs the pipeline.
+
+Locally nothing changes: `npm run start:local` (uses `.env`) or `npm start`.
+
 ## The job card
 
 See [`JOB-CARD.md`](JOB-CARD.md) for the full version. In brief:

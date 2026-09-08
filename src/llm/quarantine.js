@@ -7,7 +7,9 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const LOG_DIR = join(HERE, '..', '..', 'logs');
+// On a serverless host (e.g. Vercel) the project dir is read-only — only /tmp is
+// writable. Locally we keep the log in the repo's logs/ folder.
+const LOG_DIR = process.env.VERCEL ? '/tmp' : join(HERE, '..', '..', 'logs');
 const QUARANTINE_FILE = join(LOG_DIR, 'quarantine.jsonl');
 
 export function quarantine({ input, rawOutput, error, promptVersion }) {
