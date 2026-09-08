@@ -24,3 +24,9 @@ export function createApp() {
 
   return app;
 }
+
+// Default export: a ready-to-serve app instance.
+// Vercel's native Express support imports this module and expects the default
+// export to be the app (or a request handler). Local dev and api/index.js use
+// the createApp factory above instead.
+export default createApp();

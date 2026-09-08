@@ -4,3 +4,5 @@ node_modules/
 *.log
 logs/*.jsonl
 ai-version/node_modules
+.vercel
+.env*
